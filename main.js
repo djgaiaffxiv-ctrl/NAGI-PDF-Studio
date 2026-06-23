@@ -1,0 +1,240 @@
+// Nagi PDF Studio — proceso principal de Electron
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+let win;
+let pending = { action: null, files: [] };
+let flushTimer = null;
+
+const FILE_RE = /\.(pdf|png|jpe?g|webp|gif|bmp)$/i;
+
+// ---- Una sola instancia: los clics derechos abren un proceso por archivo;
+//      los reunimos todos en la primera instancia. ----
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_e, argv) => {
+    handleArgv(argv);
+    ensureWindow();
+  });
+
+  app.whenReady().then(() => {
+    handleArgv(process.argv);
+    createWindow();
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    });
+  });
+}
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit();
+});
+
+function createWindow() {
+  win = new BrowserWindow({
+    width: 1180,
+    height: 780,
+    minWidth: 940,
+    minHeight: 620,
+    backgroundColor: '#0E0B1A',
+    show: false,
+    icon: path.join(__dirname, 'src', 'assets', 'icon.ico'),
+    title: 'Nagi PDF Studio',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: '#0E0B1A',
+      symbolColor: '#E7E3F5',
+      height: 44,
+    },
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+    },
+  });
+
+  win.removeMenu();
+  win.loadFile(path.join(__dirname, 'src', 'index.html'));
+  win.once('ready-to-show', () => { if (win && !win.isDestroyed()) win.show(); });
+  win.webContents.on('did-finish-load', () => scheduleFlush());
+  // Red de seguridad: si en 2s no se mostró (p. ej. fallo de pintado), mostrarla igual.
+  setTimeout(() => { if (win && !win.isDestroyed() && !win.isVisible()) win.show(); }, 2000);
+  // Al cerrar la ventana principal, salir del todo (cierra ventanas ocultas de impresión
+  // y libera el candado de instancia única) → nunca quedan procesos "zombie" sin ventana.
+  win.on('closed', () => {
+    win = null;
+    if (process.platform !== 'darwin') app.quit();
+  });
+}
+
+// Garantiza que hay una ventana visible y enfocada (crea una nueva si hace falta).
+function ensureWindow() {
+  if (!win || win.isDestroyed()) { createWindow(); return; }
+  if (!win.isVisible()) win.show();
+  if (win.isMinimized()) win.restore();
+  win.focus();
+}
+
+// ---- Argumentos de línea de comandos (--nagi=accion + rutas de archivo) ----
+function parseArgs(argv) {
+  let action = null;
+  const files = [];
+  for (const a of argv) {
+    if (typeof a !== 'string') continue;
+    if (a.startsWith('--nagi=')) action = a.slice(7);
+    else if (FILE_RE.test(a) && fs.existsSync(a)) files.push(a);
+  }
+  return { action, files };
+}
+
+function handleArgv(argv) {
+  const { action, files } = parseArgs(argv);
+  if (action) pending.action = action;
+  for (const f of files) if (!pending.files.includes(f)) pending.files.push(f);
+  scheduleFlush();
+}
+
+function scheduleFlush() {
+  clearTimeout(flushTimer);
+  flushTimer = setTimeout(flush, 450);
+}
+
+function flush() {
+  if (!pending.files.length && !pending.action) return;
+  // ventana aún no disponible o destruida: si no existe del todo, abandonar (no reprogramar en bucle)
+  if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return;
+  if (win.webContents.isLoading()) { scheduleFlush(); return; }
+  const payload = {
+    action: pending.action || 'open',
+    files: pending.files.map((p) => ({ name: path.basename(p), path: p, data: fs.readFileSync(p) })),
+  };
+  pending = { action: null, files: [] };
+  try {
+    win.webContents.send('nagi:open', payload);
+  } catch (e) { /* ventana cerrada mientras tanto */ }
+}
+
+// ---- IPC: abrir archivos (PDF o imágenes) ----
+ipcMain.handle('dialog:open', async (_e, opts = {}) => {
+  const filters = opts.images
+    ? [{ name: 'Imágenes', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }]
+    : [{ name: 'PDF', extensions: ['pdf'] }];
+  const res = await dialog.showOpenDialog(win, {
+    title: opts.images ? 'Elige imágenes' : 'Elige uno o varios PDF',
+    properties: ['openFile', 'multiSelections'],
+    filters,
+  });
+  if (res.canceled) return [];
+  return res.filePaths.map((p) => ({
+    name: path.basename(p),
+    path: p,
+    data: fs.readFileSync(p),
+  }));
+});
+
+// ---- IPC: guardar un archivo ----
+ipcMain.handle('dialog:save', async (_e, { defaultName, data, filters }) => {
+  const res = await dialog.showSaveDialog(win, {
+    title: 'Guardar',
+    defaultPath: defaultName,
+    filters: filters || [{ name: 'PDF', extensions: ['pdf'] }],
+  });
+  if (res.canceled || !res.filePath) return null;
+  fs.writeFileSync(res.filePath, Buffer.from(data));
+  return res.filePath;
+});
+
+// ---- IPC: elegir carpeta (para dividir / exportar imágenes) ----
+ipcMain.handle('dialog:pickFolder', async () => {
+  const res = await dialog.showOpenDialog(win, {
+    title: 'Elige la carpeta donde guardar',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (res.canceled || !res.filePaths.length) return null;
+  return res.filePaths[0];
+});
+
+// ---- IPC: escribir un archivo dentro de una carpeta ----
+ipcMain.handle('fs:writeInto', async (_e, { folder, name, data }) => {
+  const safe = name.replace(/[\\/:*?"<>|]/g, '_');
+  const full = path.join(folder, safe);
+  fs.writeFileSync(full, Buffer.from(data));
+  return full;
+});
+
+// ---- IPC: abrir una carpeta en el explorador ----
+ipcMain.handle('shell:openPath', async (_e, p) => {
+  await shell.openPath(p);
+});
+
+// ---- IPC (síncrono): ruta base de los assets de OCR (fuera del asar) ----
+ipcMain.on('tess-base', (e) => {
+  const dir = path.join(process.resourcesPath, 'tesseract');
+  e.returnValue = 'file:///' + encodeURI(dir.replace(/\\/g, '/'));
+});
+
+// ---- IPC: leer un archivo por su ruta (para "Recientes") ----
+ipcMain.handle('fs:read', async (_e, p) => {
+  try {
+    if (!p || !fs.existsSync(p)) return null;
+    return { name: path.basename(p), path: p, data: fs.readFileSync(p) };
+  } catch (e) { return null; }
+});
+
+// ---- IPC: sobrescribir un archivo existente por su ruta (Guardar directo) ----
+ipcMain.handle('fs:overwrite', async (_e, { path: p, data }) => {
+  try { if (!p) return false; fs.writeFileSync(p, Buffer.from(data)); return true; }
+  catch (e) { return false; }
+});
+
+// ---- IPC: lista de impresoras del sistema ----
+ipcMain.handle('getPrinters', async () => {
+  try {
+    if (win && !win.isDestroyed()) return await win.webContents.getPrintersAsync();
+  } catch (e) {}
+  return [];
+});
+
+// ---- IPC: imprimir un PDF (lo carga en una ventana oculta con el visor de Chromium) ----
+ipcMain.handle('print', async (_e, payload) => {
+  // compatibilidad: payload puede ser bytes (antiguo) o { data, options } (nuevo)
+  const data = payload && payload.data ? payload.data : payload;
+  const options = (payload && payload.options) || {};
+  let tmp, w;
+  try {
+    tmp = path.join(os.tmpdir(), 'nagi-print-' + process.hrtime.bigint() + '.pdf');
+    fs.writeFileSync(tmp, Buffer.from(data));
+    w = new BrowserWindow({ show: false, webPreferences: { plugins: true } });
+    await w.loadURL('file:///' + tmp.replace(/\\/g, '/'));
+    await new Promise((r) => setTimeout(r, 400)); // dejar que el visor de PDF dibuje
+
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      try { if (w && !w.isDestroyed()) w.destroy(); } catch (e) {}
+      try { fs.unlinkSync(tmp); } catch (e) {}
+    };
+
+    const printOpts = { printBackground: true };
+    if (options.deviceName) { printOpts.silent = true; printOpts.deviceName = options.deviceName; }
+    else { printOpts.silent = false; } // sin impresora elegida → diálogo del sistema
+    if (options.copies) printOpts.copies = options.copies;
+    if (options.landscape != null) printOpts.landscape = !!options.landscape;
+    if (options.pageRanges && options.pageRanges.length) printOpts.pageRanges = options.pageRanges;
+
+    // NO esperamos al callback (no siempre se dispara); limpiamos cuando podamos.
+    w.webContents.print(printOpts, () => cleanup());
+    setTimeout(cleanup, 60000); // red de seguridad: cerrar la ventana oculta de impresión al minuto
+    return true;
+  } catch (e) {
+    try { if (w && !w.isDestroyed()) w.destroy(); } catch (e2) {}
+    try { if (tmp) fs.unlinkSync(tmp); } catch (e3) {}
+    return false;
+  }
+});

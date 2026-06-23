@@ -1,0 +1,64 @@
+{
+  "name": "nagi-pdf-studio",
+  "version": "1.0.1",
+  "description": "Nagi PDF Studio — la navaja suiza de PDFs, premium y privada, by Nagi Studios",
+  "author": "Nagi Studios",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "vendor": "node scripts/copy-vendor.js",
+    "dist": "npm run vendor && electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "rcedit": "^5.0.2",
+    "tesseract.js": "^5.1.1"
+  },
+  "dependencies": {
+    "@cantoo/pdf-lib": "^2.4.1",
+    "pdfjs-dist": "^4.8.69"
+  },
+  "build": {
+    "appId": "studio.nagi.pdf",
+    "productName": "Nagi PDF Studio",
+    "directories": {
+      "output": "dist-installer"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "extra/tesseract",
+        "to": "tesseract"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Nagi PDF Studio",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "include": "build/installer.nsh"
+    }
+  }
+}

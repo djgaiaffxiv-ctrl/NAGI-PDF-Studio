@@ -1,0 +1,13 @@
+# dependencias y artefactos (se regeneran)
+node_modules/
+dist-installer/
+
+# logs y temporales de trabajo
+_*.log
+*.log
+_scantest/
+_preview.png
+
+# OS
+Thumbs.db
+.DS_Store

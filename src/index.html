@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' blob: data: file:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' blob: file: 'wasm-unsafe-eval'; worker-src 'self' blob: file:; connect-src 'self' blob: data: file:; font-src 'self';" />
+  <title>Nagi PDF Studio</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Barra de título personalizada (arrastrable) -->
+  <header class="titlebar">
+    <div class="brand">
+      <img src="assets/logo.png" alt="Nagi" class="brand-mark" />
+      <div class="brand-text">
+        <span class="brand-name">Nagi <b>PDF</b> Studio</span>
+        <span class="brand-jp">凪 · 工</span>
+      </div>
+    </div>
+    <div class="titlebar-spacer"></div>
+  </header>
+  <div class="accent-line"></div>
+
+  <main class="layout">
+    <!-- Barra lateral -->
+    <nav class="sidebar" id="sidebar"></nav>
+
+    <!-- Zona de trabajo -->
+    <section class="workspace" id="workspace"></section>
+  </main>
+
+  <!-- Capa de carga -->
+  <div class="overlay" id="overlay" hidden>
+    <div class="overlay-card">
+      <div class="spinner"></div>
+      <p id="overlay-text">Procesando…</p>
+    </div>
+  </div>
+
+  <!-- Avisos -->
+  <div class="toasts" id="toasts"></div>
+
+  <script src="vendor/pdf-lib.min.js"></script>
+  <script src="vendor/tesseract.min.js"></script>
+  <script type="module" src="renderer.js"></script>
+</body>
+</html>

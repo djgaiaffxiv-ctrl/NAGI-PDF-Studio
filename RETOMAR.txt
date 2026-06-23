@@ -1,0 +1,61 @@
+════════════════════════════════════════════════════════════════
+  NAGI PDF STUDIO — cómo retomar en otro PC
+  by Nagi Studios · 100% offline y privado
+════════════════════════════════════════════════════════════════
+
+QUÉ ES
+------
+Una app de escritorio (Electron) tipo Nitro/Acrobat, con marca Nagi.
+Visor PDF premium + edición + OCR + firma + formularios + más.
+
+ESTADO ACTUAL (todo terminado y probado)
+-----------------------------------------
+• Oleada 1 — Buscar (Ctrl+F), atajos, arrastrar y soltar
+• Oleada 2 — Rellenar formularios
+• Oleada 3a — Formas (rectángulo/elipse/línea/flecha) + Recorte "Foto"
+• Oleada 3b — Insertar imagen + Firma guardada (dibujada o escaneada) + Notas
+• Oleada 4 — Recientes en Inicio + Modo lectura oscuro + Índice/Marcadores
+• Oleada 5a — Detección de la fuente original al editar texto
+• Oleada 5b — OCR offline (español + inglés): escaneados → buscables
+• Oleada 5c — Instalador .exe real para compartir
+
+CÓMO ABRIR EL PROYECTO EN CASA (con ayuda de Claude)
+----------------------------------------------------
+1) Copia esta carpeta entera a tu PC de casa.
+2) Pídele a Claude que ejecute:  npm install
+   (descarga las librerías; necesita internet una vez)
+3) Para probar la app:            npm start
+4) Para regenerar el instalador .exe (lleva el OCR dentro, se incluye solo):
+   a) Lánzalo una vez (FALLARÁ, es lo esperado):
+        set CSC_IDENTITY_AUTO_DISCOVERY=false
+        npx electron-builder --win nsis
+      -> Da un error de "Cannot create symbolic link" porque winCodeSign trae
+         2 enlaces de macOS (.dylib) que Windows no puede crear. Es NORMAL.
+   b) Pre-extrae winCodeSign IGNORANDO esos 2 symlinks de Mac (no hacen falta):
+        node_modules\7zip-bin\win\x64\7za.exe x ^
+          "%LOCALAPPDATA%\electron-builder\Cache\winCodeSign\winCodeSign-2.6.0.7z" ^
+          -o"%LOCALAPPDATA%\electron-builder\Cache\winCodeSign\winCodeSign-2.6.0" -y
+      (Si ese .7z no existiera, descárgalo de:
+       https://github.com/electron-userland/electron-builder-binaries/releases/download/winCodeSign-2.6.0/winCodeSign-2.6.0.7z
+       y déjalo en esa carpeta antes de extraerlo.)
+   c) Vuelve a lanzarlo y ahora SÍ funciona:
+        set CSC_IDENTITY_AUTO_DISCOVERY=false
+        npx electron-builder --win nsis
+   -> Instalador en:  dist-installer\Nagi PDF Studio Setup 1.0.0.exe  (~119 MB)
+   (Los idiomas del OCR se empaquetan solos: package.json -> build.extraResources.)
+
+   IMPORTANTE: "tesseract.js" debe estar en devDependencies (no en dependencies),
+   para que NO infle el instalador. Ya está así en este package.json.
+
+ESTRUCTURA
+----------
+  main.js            -> proceso principal de Electron (ventanas, IPC, menú Windows)
+  preload.js         -> puente seguro interfaz <-> sistema
+  src/               -> la app (renderer.js, index.html, styles.css, vendor/)
+  extra/tesseract/   -> motor OCR (worker + wasm + idiomas ES/EN)  ¡NO BORRAR!
+  scripts/           -> utilidades y generadores de PDFs de prueba
+  build/             -> icono, .reg y script del instalador (menú contextual)
+
+NOTA: este ZIP NO incluye "node_modules" ni "dist-installer" (se regeneran).
+Sí incluye extra/tesseract (los idiomas del OCR, que cuestan de volver a bajar).
+════════════════════════════════════════════════════════════════
