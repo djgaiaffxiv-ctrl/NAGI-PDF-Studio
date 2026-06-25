@@ -10,6 +10,12 @@ let flushTimer = null;
 
 const FILE_RE = /\.(pdf|png|jpe?g|webp|gif|bmp)$/i;
 
+// La aceleración por GPU provoca, en algunos equipos, páginas impresas en negro
+// o en blanco (la ventana oculta de impresión se compone en la GPU y no vuelca
+// bien su contenido). Desactivarla hace la impresión fiable; el visor usa lienzo
+// 2D (CPU), así que no se nota en el uso normal.
+app.disableHardwareAcceleration();
+
 // ---- Una sola instancia: los clics derechos abren un proceso por archivo;
 //      los reunimos todos en la primera instancia. ----
 const gotLock = app.requestSingleInstanceLock();
@@ -205,36 +211,59 @@ ipcMain.handle('print', async (_e, payload) => {
   // compatibilidad: payload puede ser bytes (antiguo) o { data, options } (nuevo)
   const data = payload && payload.data ? payload.data : payload;
   const options = (payload && payload.options) || {};
-  let tmp, w;
+  const buf = Buffer.from(data);
+  let tmp = null, w = null, cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    try { if (w && !w.isDestroyed()) w.destroy(); } catch (e) {}
+    try { if (tmp) fs.unlinkSync(tmp); } catch (e) {}
+  };
   try {
     tmp = path.join(os.tmpdir(), 'nagi-print-' + process.hrtime.bigint() + '.pdf');
-    fs.writeFileSync(tmp, Buffer.from(data));
-    w = new BrowserWindow({ show: false, webPreferences: { plugins: true } });
+    fs.writeFileSync(tmp, buf);
+    w = new BrowserWindow({
+      show: false,
+      backgroundColor: '#ffffff', // fondo blanco: evita que salgan páginas en negro
+      webPreferences: { plugins: true, backgroundThrottling: false },
+    });
     await w.loadURL('file:///' + tmp.replace(/\\/g, '/'));
-    await new Promise((r) => setTimeout(r, 400)); // dejar que el visor de PDF dibuje
 
-    let cleaned = false;
-    const cleanup = () => {
-      if (cleaned) return;
-      cleaned = true;
-      try { if (w && !w.isDestroyed()) w.destroy(); } catch (e) {}
-      try { fs.unlinkSync(tmp); } catch (e) {}
+    // pdfium dibuja el PDF de forma asíncrona. Esperamos a que termine de cargar
+    // y damos un margen proporcional al tamaño (más páginas → más tiempo de pintado),
+    // para no mandar a imprimir antes de tiempo (causa de atascos y páginas en blanco).
+    await new Promise((r) => {
+      let done = false; const go = () => { if (!done) { done = true; r(); } };
+      if (!w.webContents.isLoading()) go();
+      else w.webContents.once('did-stop-loading', go);
+      setTimeout(go, 5000); // tope por si el evento no llega
+    });
+    const sizeMb = buf.length / (1024 * 1024);
+    await new Promise((r) => setTimeout(r, Math.min(5000, 700 + sizeMb * 220)));
+
+    const printOpts = {
+      silent: !!options.deviceName,        // con impresora elegida → directo; sin ella → diálogo del sistema
+      printBackground: false,              // NO pintar el fondo del visor de Chromium (era lo que ennegrecía)
+      color: true,
+      margins: { marginType: 'none' },
     };
-
-    const printOpts = { printBackground: true };
-    if (options.deviceName) { printOpts.silent = true; printOpts.deviceName = options.deviceName; }
-    else { printOpts.silent = false; } // sin impresora elegida → diálogo del sistema
-    if (options.copies) printOpts.copies = options.copies;
+    if (options.deviceName) printOpts.deviceName = options.deviceName;
+    if (options.copies) printOpts.copies = Math.max(1, options.copies | 0);
     if (options.landscape != null) printOpts.landscape = !!options.landscape;
     if (options.pageRanges && options.pageRanges.length) printOpts.pageRanges = options.pageRanges;
 
-    // NO esperamos al callback (no siempre se dispara); limpiamos cuando podamos.
-    w.webContents.print(printOpts, () => cleanup());
-    setTimeout(cleanup, 60000); // red de seguridad: cerrar la ventana oculta de impresión al minuto
-    return true;
+    // Esperamos al callback real de impresión y NO destruimos la ventana antes de tiempo
+    // (el fallo anterior la cerraba a los 60 s, abortando los trabajos largos a mitad).
+    const ok = await new Promise((resolve) => {
+      let settled = false;
+      const finish = (v) => { if (settled) return; settled = true; cleanup(); resolve(v); };
+      try { w.webContents.print(printOpts, (success) => finish(success)); }
+      catch (e) { finish(false); }
+      setTimeout(() => finish(true), 8 * 60 * 1000); // red de seguridad amplia para trabajos grandes
+    });
+    return ok;
   } catch (e) {
-    try { if (w && !w.isDestroyed()) w.destroy(); } catch (e2) {}
-    try { if (tmp) fs.unlinkSync(tmp); } catch (e3) {}
+    cleanup();
     return false;
   }
 });

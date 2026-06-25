@@ -818,6 +818,7 @@ async function renderViewer() {
       wrap.append(canvas, el('div', { class: 'vmark-layer' }));
       wrap._vp = vp;
       renderMarks(wrap);
+      buildTextLayer(wrap); // capa de texto seleccionable (siempre)
       // cargar los campos de formulario (asíncrono, sin bloquear el pintado)
       getPageAnnots(doc, i).then((annots) => { wrap._annots = annots; if (wrap.isConnected) renderMarks(wrap); });
     }
@@ -1396,6 +1397,24 @@ async function renderViewer() {
         : (t === 'note' ? 'copy'
           : ((t === 'cover' || t === 'snapshot' || SHAPE_TOOLS.includes(t)) ? 'crosshair' : '')));
   }
+  // --- Capa de texto seleccionable (SIEMPRE activa, como en Nitro): el ratón
+  //     selecciona el texto real de la página; el cursor se vuelve "I" sobre él.
+  //     Con una herramienta de edición activa se desactiva vía CSS (.marking). ---
+  async function buildTextLayer(wrap) {
+    if (!wrap || !wrap._vp || wrap.querySelector('.vtext-layer')) return;
+    const i = +wrap.dataset.p;
+    let page; try { page = await doc.pdf.getPage(i); } catch (e) { return; }
+    if (!wrap.isConnected || wrap.querySelector('.vtext-layer')) return;
+    const div = el('div', { class: 'vtext-layer' });
+    div.style.setProperty('--scale-factor', wrap._vp.scale);
+    const canvas = wrap.querySelector('canvas');
+    if (canvas) canvas.insertAdjacentElement('afterend', div); else wrap.append(div);
+    try {
+      const tl = new pdfjsLib.TextLayer({ textContentSource: page.streamTextContent(), container: div, viewport: wrap._vp });
+      await tl.render();
+    } catch (e) { div.remove(); }
+  }
+
   function setTool(name) {
     VIEWER.activeTool = (VIEWER.activeTool === name) ? '' : name;
     const t = VIEWER.activeTool;
@@ -1635,35 +1654,51 @@ async function renderViewer() {
     if (mod && e.key === 'ArrowLeft') { e.preventDefault(); goTo(doc.current - 1); return; }
   };
 
+  // helpers para la barra agrupada en "islas"
+  const vd = () => el('span', { class: 'vb-vd' });
+  const island = (label, kids, extraCls) => el('div', { class: 'vb-isle-wrap' }, [
+    el('div', { class: 'vb-isle-lbl', text: label }),
+    el('div', { class: 'vb-isle' + (extraCls ? ' ' + extraCls : '') }, kids),
+  ]);
+  const lblBtn = (icon, text, title, on, cls) => el('button', { class: 'vbtn vbtn-lbl' + (cls ? ' ' + cls : ''), title, onclick: on }, [
+    el('span', { class: 'vb-ico', html: icon }), el('span', { class: 'vb-txt', text }),
+  ]);
+
   const bar = el('div', { class: 'viewer-bar' }, [
-    vbtn(I.save, doc.path ? 'Guardar (sobrescribe el original) · Ctrl+S' : 'Guardar · Ctrl+S', () => saveDoc(false)),
-    vbtn(I.saveas, 'Guardar como… (copia nueva) · Ctrl+Mayús+S', () => saveDoc(true)),
-    vbtn(I.print, 'Imprimir', () => openPrintPreview({ pdf: doc.pdf, bytes: doc.bytes, numPages: doc.numPages, current: doc.current })),
-    vbtn(I.search, 'Buscar (Ctrl+F)', () => openSearch()),
-    el('span', { class: 'vb-sep' }),
-    thumbsBtn, outlineBtn, bookmarkBtn, darkBtn, ocrBtn,
-    el('span', { class: 'vb-sep' }),
-    vbtn(I.up, 'Página anterior', () => goTo(doc.current - 1)),
-    el('div', { class: 'vb-page' }, [pageInput, el('span', { text: '/ ' + doc.numPages })]),
-    vbtn(I.down, 'Página siguiente', () => goTo(doc.current + 1)),
-    el('span', { class: 'vb-sep' }),
-    vbtn(I.zoomout, 'Alejar', () => setScale(doc.scale - 0.15)),
-    zoomLabel,
-    vbtn(I.zoomin, 'Acercar', () => setScale(doc.scale + 0.15)),
-    vbtn(I.fitwidth, 'Ajustar al ancho', fitWidth),
-    vbtn(I.fitpage, 'Ajustar a la página', fitPage),
-    vbtn(I.rotpage, 'Girar SOLO esta página (se guarda)', () => rotatePage(doc.current)),
-    vbtn(I.rot, 'Girar la vista (todas, sin guardar)', () => { doc.rotation = (doc.rotation + 90) % 360; relayout(); }),
-    el('span', { class: 'vb-sep' }),
-    markBtn, coverBtn, textBtn, editBtn,
-    el('span', { class: 'vb-sep' }),
-    ...shapeBtns, snapBtn,
-    el('span', { class: 'vb-sep' }),
-    imageBtn, signBtn, noteBtn,
+    island('Archivo', [
+      lblBtn(I.save, 'Guardar', doc.path ? 'Guardar (sobrescribe el original) · Ctrl+S' : 'Guardar · Ctrl+S', () => saveDoc(false), 'vb-primary'),
+      vbtn(I.saveas, 'Guardar como… (copia nueva) · Ctrl+Mayús+S', () => saveDoc(true)),
+      lblBtn(I.print, 'Imprimir', 'Imprimir · Ctrl+P', () => openPrintPreview({ pdf: doc.pdf, bytes: doc.bytes, numPages: doc.numPages, current: doc.current }), 'vb-accent'),
+      vbtn(I.search, 'Buscar (Ctrl+F)', () => openSearch()),
+    ]),
+    island('Vista', [thumbsBtn, outlineBtn, bookmarkBtn, darkBtn, ocrBtn]),
+    island('Navegar', [
+      vbtn(I.up, 'Página anterior', () => goTo(doc.current - 1)),
+      el('div', { class: 'vb-page' }, [pageInput, el('span', { text: '/ ' + doc.numPages })]),
+      vbtn(I.down, 'Página siguiente', () => goTo(doc.current + 1)),
+      vd(),
+      vbtn(I.zoomout, 'Alejar', () => setScale(doc.scale - 0.15)),
+      zoomLabel,
+      vbtn(I.zoomin, 'Acercar', () => setScale(doc.scale + 0.15)),
+      vd(),
+      vbtn(I.fitwidth, 'Ajustar al ancho', fitWidth),
+      vbtn(I.fitpage, 'Ajustar a la página', fitPage),
+      vbtn(I.rotpage, 'Girar SOLO esta página (se guarda)', () => rotatePage(doc.current)),
+      vbtn(I.rot, 'Girar la vista (todas, sin guardar)', () => { doc.rotation = (doc.rotation + 90) % 360; relayout(); }),
+    ]),
+    island('Editar y anotar', [
+      markBtn, coverBtn, textBtn, editBtn,
+      vd(),
+      ...shapeBtns, snapBtn,
+      vd(),
+      imageBtn, signBtn, noteBtn,
+    ], 'vb-isle-edit'),
     markColorRow, textOptRow, shapeColorRow,
     el('span', { class: 'vb-spacer' }),
-    vbtn(I.merge, 'Combinar con otros PDF', () => openTool('merge', [{ name: doc.name, bytes: doc.bytes }])),
-    el('button', { class: 'btn btn-ghost', html: I.organize + ' Organizar', onclick: () => openTool('organize', [{ name: doc.name, bytes: doc.bytes }]) }),
+    island('Más', [
+      vbtn(I.merge, 'Combinar con otros PDF', () => openTool('merge', [{ name: doc.name, bytes: doc.bytes }])),
+      lblBtn(I.organize, 'Organizar', 'Organizar páginas', () => openTool('organize', [{ name: doc.name, bytes: doc.bytes }])),
+    ]),
   ]);
 
   thumbsEl = el('div', { class: 'viewer-thumbs' });
