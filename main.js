@@ -1,5 +1,6 @@
 // Nagi PDF Studio — proceso principal de Electron
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -30,6 +31,7 @@ if (!gotLock) {
   app.whenReady().then(() => {
     handleArgv(process.argv);
     createWindow();
+    setupAutoUpdate();
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
@@ -76,6 +78,27 @@ function createWindow() {
     win = null;
     if (process.platform !== 'darwin') app.quit();
   });
+}
+
+// ---- Auto-actualización desde las Releases de GitHub (electron-updater) ----
+// Solo en la app instalada. Descarga en segundo plano y ofrece reiniciar para instalar.
+function setupAutoUpdate() {
+  if (!app.isPackaged) return; // en desarrollo no hay nada que actualizar
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on('update-downloaded', (info) => {
+    if (!win || win.isDestroyed()) return;
+    dialog.showMessageBox(win, {
+      type: 'info',
+      title: 'Actualización disponible',
+      message: 'Nagi PDF Studio ' + (info && info.version ? info.version : '') + ' está lista.',
+      detail: 'Se instalará al reiniciar la app. ¿Reiniciar ahora?',
+      buttons: ['Reiniciar ahora', 'Más tarde'],
+      defaultId: 0, cancelId: 1, noLink: true,
+    }).then((r) => { if (r.response === 0) { setImmediate(() => autoUpdater.quitAndInstall()); } }).catch(() => {});
+  });
+  autoUpdater.on('error', () => {}); // sin conexión / sin permisos → silencioso, no molestar
+  try { autoUpdater.checkForUpdates(); } catch (e) {}
 }
 
 // Garantiza que hay una ventana visible y enfocada (crea una nueva si hace falta).

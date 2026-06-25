@@ -1,6 +1,6 @@
 {
   "name": "nagi-pdf-studio",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Nagi PDF Studio — la navaja suiza de PDFs, premium y privada, by Nagi Studios",
   "author": "Nagi Studios",
   "license": "UNLICENSED",
@@ -19,11 +19,20 @@
   },
   "dependencies": {
     "@cantoo/pdf-lib": "^2.4.1",
+    "electron-updater": "^6.8.9",
     "pdfjs-dist": "^4.8.69"
   },
   "build": {
     "appId": "studio.nagi.pdf",
     "productName": "Nagi PDF Studio",
+    "artifactName": "NAGI-PDF-Studio-Setup-${version}.${ext}",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "djgaiaffxiv-ctrl",
+        "repo": "NAGI-PDF-Studio"
+      }
+    ],
     "directories": {
       "output": "dist-installer"
     },
