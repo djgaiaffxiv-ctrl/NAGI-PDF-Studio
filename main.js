@@ -275,14 +275,18 @@ ipcMain.handle('print', async (_e, payload) => {
     if (options.landscape != null) printOpts.landscape = !!options.landscape;
     if (options.pageRanges && options.pageRanges.length) printOpts.pageRanges = options.pageRanges;
 
-    // Esperamos al callback real de impresión y NO destruimos la ventana antes de tiempo
-    // (el fallo anterior la cerraba a los 60 s, abortando los trabajos largos a mitad).
+    // Respondemos a la interfaz EN CUANTO el trabajo se despacha, sin esperar el
+    // callback de Chromium: en impresión silenciosa ese callback a menudo no llega,
+    // y eso dejaba el "Enviando a la impresora…" colgado aunque sí imprimiera.
+    // La ventana oculta se mantiene viva por separado para que los trabajos grandes
+    // terminen de spoolear, y se limpia al acabar o, como mucho, a los 8 min.
     const ok = await new Promise((resolve) => {
-      let settled = false;
-      const finish = (v) => { if (settled) return; settled = true; cleanup(); resolve(v); };
-      try { w.webContents.print(printOpts, (success) => finish(success)); }
-      catch (e) { finish(false); }
-      setTimeout(() => finish(true), 8 * 60 * 1000); // red de seguridad amplia para trabajos grandes
+      let answered = false;
+      const answer = (v) => { if (answered) return; answered = true; resolve(v); };
+      try { w.webContents.print(printOpts, (success) => { answer(success); cleanup(); }); }
+      catch (e) { answer(false); cleanup(); }
+      setTimeout(() => answer(true), 1500);   // la UI nunca se queda colgada
+      setTimeout(cleanup, 8 * 60 * 1000);     // limpiar la ventana oculta (margen amplio, sin abortar)
     });
     return ok;
   } catch (e) {
