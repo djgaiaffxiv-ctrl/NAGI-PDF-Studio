@@ -63,6 +63,8 @@ const I = {
   snapshot: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><circle cx="12" cy="12" r="3"/></svg>',
   image: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>',
   sign: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17c3 0 4-9 6-9s2 6 4 6 2-4 4-4 2 2 4 2"/><path d="M3 21h18"/></svg>',
+  hand: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V12"/><path d="M11 12V4.5a1.5 1.5 0 0 1 3 0V12"/><path d="M14 12.5V6.5a1.5 1.5 0 0 1 3 0V15"/><path d="M17 11.5a1.5 1.5 0 0 1 3 0V16a6 6 0 0 1-6 6h-2a6 6 0 0 1-5.4-3.4L5 16.2a1.5 1.5 0 0 1 2.6-1.5L8 15.3"/></svg>',
+  sig: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V5z"/><path d="M9 12l2 2 4-4"/></svg>',
   note: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v11l-5 5H4z"/><path d="M20 15h-5v5"/></svg>',
   clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>',
   file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>',
@@ -196,6 +198,85 @@ function processScan(im, inkCss) {
   const c2 = document.createElement('canvas'); c2.width = cw; c2.height = ch;
   c2.getContext('2d').drawImage(c, minX, minY, cw, ch, 0, 0, cw, ch);
   return { dataUrl: c2.toDataURL('image/png'), ar: cw / ch };
+}
+
+/* ---------------- Detector de firmas digitales ---------------- */
+// Decodifica una cadena PDF (literal (..) o hex <..>) a texto legible (soporta UTF-16BE).
+function decodePdfText(str) {
+  if (str.charCodeAt(0) === 0xFE && str.charCodeAt(1) === 0xFF) {
+    let out = ''; for (let i = 2; i + 1 < str.length; i += 2) out += String.fromCharCode((str.charCodeAt(i) << 8) | str.charCodeAt(i + 1));
+    return out.replace(/\x00/g, '').trim();
+  }
+  return str.replace(/\x00/g, '').trim();
+}
+function extractPdfString(win, re) {
+  const m = re.exec(win); if (!m) return null;
+  let raw = m[1];
+  if (raw[0] === '(') return decodePdfText(raw.slice(1, -1).replace(/\\([()\\])/g, '$1')) || null;
+  const hex = raw.slice(1, -1).replace(/\s+/g, '');
+  let out = ''; for (let i = 0; i + 1 < hex.length; i += 2) out += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+  return decodePdfText(out) || null;
+}
+// Las firmas digitales guardan su diccionario SIN comprimir (el /ByteRange debe poder
+// direccionarlo), así que se pueden leer directamente del binario del PDF.
+function detectSignatures(bytes) {
+  const s = new TextDecoder('latin1').decode(bytes);
+  const sigs = [];
+  const reBR = /\/ByteRange\s*\[/g; let m;
+  while ((m = reBR.exec(s))) {
+    const win = s.slice(Math.max(0, m.index - 1400), Math.min(s.length, m.index + 1400));
+    const subf = /\/SubFilter\s*\/([A-Za-z0-9.\-_]+)/.exec(win);
+    const dateM = /\/M\s*\(D:(\d{4})(\d\d)(\d\d)(\d\d)?(\d\d)?/.exec(win);
+    let date = null;
+    if (dateM) { const [, Y, Mo, D, h, mi] = dateM; date = `${D}/${Mo}/${Y}` + (h ? ` · ${h}:${mi || '00'}` : ''); }
+    sigs.push({
+      subfilter: subf ? subf[1] : null,
+      name: extractPdfString(win, /\/Name\s*(\([\s\S]*?\)|<[0-9A-Fa-f\s]*>)/),
+      reason: extractPdfString(win, /\/Reason\s*(\([\s\S]*?\)|<[0-9A-Fa-f\s]*>)/),
+      location: extractPdfString(win, /\/Location\s*(\([\s\S]*?\)|<[0-9A-Fa-f\s]*>)/),
+      date,
+    });
+  }
+  const sigFields = (s.match(/\/FT\s*\/Sig/g) || []).length;
+  return { signed: sigs.length > 0, signatures: sigs, sigFields, emptyFields: Math.max(0, sigFields - sigs.length) };
+}
+function openSignaturePanel(doc) {
+  const info = detectSignatures(doc.bytes);
+  const overlay = el('div', { class: 'pp-overlay' });
+  const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  const body = el('div', { class: 'sig-body' });
+  if (!info.signed && !info.sigFields) {
+    body.append(el('div', { class: 'sig-empty' }, [el('div', { class: 'sig-empty-ico', html: I.sig }), el('p', { text: 'Este PDF no tiene firmas digitales.' })]));
+  } else {
+    if (info.signed) {
+      body.append(el('div', { class: 'sig-badge ok', html: I.check + ` Firmado digitalmente · ${info.signatures.length} firma(s)` }));
+      info.signatures.forEach((sg, i) => {
+        const rows = [];
+        if (sg.name) rows.push(['Firmante', sg.name]);
+        if (sg.date) rows.push(['Fecha', sg.date]);
+        if (sg.reason) rows.push(['Motivo', sg.reason]);
+        if (sg.location) rows.push(['Lugar', sg.location]);
+        if (sg.subfilter) rows.push(['Tipo', sg.subfilter]);
+        if (!rows.length) rows.push(['Firma', 'presente (sin datos declarados)']);
+        body.append(el('div', { class: 'sig-card' }, [
+          el('div', { class: 'sig-card-h', text: 'Firma ' + (i + 1) }),
+          ...rows.map(([k, v]) => el('div', { class: 'sig-row' }, [el('span', { class: 'sig-k', text: k }), el('span', { class: 'sig-v', text: v })])),
+        ]));
+      });
+    }
+    if (info.emptyFields > 0) body.append(el('div', { class: 'sig-badge warn', text: `Hay ${info.emptyFields} campo(s) de firma sin firmar.` }));
+    body.append(el('p', { class: 'sig-note', text: 'Se detecta la presencia y los datos declarados de cada firma. La validez criptográfica del certificado no se comprueba.' }));
+  }
+  const modal = el('div', { class: 'pp-modal sig-modal' }, [
+    el('div', { class: 'pp-head' }, [el('div', { class: 'pp-ico', html: I.sig }), el('h3', { text: 'Firmas digitales' }), el('span', { class: 'pp-jp', text: '印' }), el('button', { class: 'icon-btn pp-x', html: I.x, title: 'Cerrar', onclick: close })]),
+    el('div', { class: 'pp-body' }, [body]),
+    el('div', { class: 'pp-foot' }, [el('span', { class: 'pp-hint', text: '凪 Análisis local, sin conexión' }), el('div', { class: 'pp-actions' }, [el('button', { class: 'btn btn-primary', text: 'Cerrar', onclick: close })])]),
+  ]);
+  overlay.append(el('div', { class: 'pp-frame' }, [modal]));
+  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', onKey);
+  document.body.append(overlay);
 }
 
 /* ---------------- Render con pdf.js ---------------- */
@@ -525,12 +606,24 @@ async function openPrintPreview({ pdf, bytes, numPages, current }) {
     const options = {
       deviceName: printerSel.value || undefined,
       copies: Math.max(1, parseInt(copiesIn.value) || 1),
-      pageRanges: modeAll.checked ? undefined : pagesToRanges(pages),
     };
     close();
     busy(true, 'Enviando a la impresora…');
     let ok = false;
-    try { ok = await window.nagi.print(bytes, options); } catch (e) { ok = false; } finally { busy(false); }
+    try {
+      let toPrint = bytes;
+      // Para "Página actual" / "Personalizado" extraemos SOLO esas páginas a un PDF
+      // nuevo y lo imprimimos entero. Es mucho más fiable que pageRanges (que el
+      // visor PDF de Chromium ignoraba, imprimiendo todo).
+      if (!modeAll.checked) {
+        const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
+        const out = await PDFDocument.create();
+        const copied = await out.copyPages(src, pages.map((n) => n - 1));
+        copied.forEach((p) => out.addPage(p));
+        toPrint = await out.save();
+      }
+      ok = await window.nagi.print(toPrint, options);
+    } catch (e) { ok = false; } finally { busy(false); }
     toast(ok ? 'Documento enviado a la impresora.' : 'No se pudo imprimir.', ok ? 'ok' : 'warn');
   }
 
@@ -1114,6 +1207,35 @@ async function renderViewer() {
     renderThumb(n);
     toast('Página ' + n + ' girada. Pulsa Guardar para conservarlo.');
   }
+  // Quita una página del documento directamente (recarga y reajusta todo el estado).
+  async function deletePage(n) {
+    if (!n || n < 1 || n > doc.numPages) return;
+    if (doc.numPages <= 1) { toast('El PDF solo tiene una página; no puede quedarse vacío.', 'warn'); return; }
+    if (!window.confirm('¿Quitar la página ' + n + ' de ' + doc.numPages + '?\nSe aplica al documento abierto (usa Guardar para conservarlo en disco).')) return;
+    busy(true, 'Quitando página…');
+    try {
+      const src = await PDFDocument.load(doc.bytes, { ignoreEncryption: true });
+      src.removePage(n - 1);
+      doc.bytes = await src.save();
+      doc.pdf = await loadPdfjs(doc.bytes);
+      doc.numPages = doc.pdf.numPages;
+      doc.base = [];
+      for (let i = 1; i <= doc.numPages; i++) { const vp = (await doc.pdf.getPage(i)).getViewport({ scale: 1 }); doc.base.push({ w: vp.width, h: vp.height }); }
+      // reajustar el estado indexado por página: se quita n y las > n bajan una posición
+      const shiftMap = (obj) => { const out = {}; for (const k of Object.keys(obj || {})) { const p = +k; if (p === n) continue; out[p > n ? p - 1 : p] = obj[k]; } return out; };
+      const shiftArr = (arr) => (arr || []).filter((it) => it.page !== n).map((it) => (it.page > n ? { ...it, page: it.page - 1 } : it));
+      doc.pageRot = shiftMap(doc.pageRot);
+      if (doc.ocr) doc.ocr = shiftMap(doc.ocr);
+      doc.marks = shiftArr(doc.marks);
+      doc.edits = shiftArr(doc.edits);
+      try { saveBookmarks(getBookmarks().filter((b) => b.page !== n).map((b) => ({ page: b.page > n ? b.page - 1 : b.page }))); } catch (e) {}
+      doc._textCache = {}; doc._annotCache = {}; doc.history = [];
+      if (doc.current > doc.numPages) doc.current = doc.numPages;
+      busy(false);
+      toast('Página quitada. Pulsa Guardar para conservarlo.', 'ok');
+      renderViewer();
+    } catch (e) { busy(false); toast('No se pudo quitar la página: ' + (e && e.message || e), 'err'); }
+  }
   function fitWidth() {
     const avail = scrollEl.clientWidth - 44;
     const maxW = Math.max(...doc.base.map((b) => (doc.rotation % 180 !== 0 ? b.h : b.w)));
@@ -1294,6 +1416,7 @@ async function renderViewer() {
       const t = el('div', { class: 'vthumb', 'data-t': i, onclick: () => goTo(i) }, [
         el('div', { class: 'vthumb-ph' }), el('div', { class: 'vt-num', text: i }),
         el('button', { class: 'vthumb-rot', html: I.rotpage, title: 'Girar esta página', onclick: (e) => { e.stopPropagation(); rotatePage(i); } }),
+        el('button', { class: 'vthumb-del', html: I.trash, title: 'Quitar esta página', onclick: (e) => { e.stopPropagation(); deletePage(i); } }),
       ]);
       thumbsEl.append(t);
       thumbIo.observe(t);
@@ -1325,9 +1448,11 @@ async function renderViewer() {
   outlineBtn = vbtn(I.index, 'Índice y marcadores', toggleOutline);
   darkBtn = vbtn(I.moon, 'Modo lectura oscuro', toggleDark);
   const ocrBtn = vbtn(I.ocr, 'OCR: reconocer texto de un PDF escaneado', () => runOcr());
+  const sigBtn = vbtn(I.sig, 'Detectar firmas digitales del PDF', () => openSignaturePanel(doc));
   bookmarkBtn = vbtn(I.star, 'Marcar / desmarcar esta página', () => { isBookmarked(doc.current) ? removeBookmark(doc.current) : addBookmark(doc.current); markBookmarkBtn(); if (outlineEl && outlineEl.classList.contains('show')) buildOutline(); });
 
   // --- Herramientas de edición: Resaltar / Texto / Tapar ---
+  const handBtn = vbtn(I.hand, 'Mano — arrastra para mover la hoja · vuelve al modo normal (o pulsa Esc)', () => setTool('hand'));
   const markBtn = vbtn(I.marker, 'Resaltar (clic=línea, arrastra=zona)', () => setTool('mark'));
   const textBtn = vbtn(I.text, 'Escribir texto (clic para colocar)', () => setTool('text'));
   const coverBtn = vbtn(I.cover, 'Tapar / corregir (arrastra un recuadro blanco)', () => setTool('cover'));
@@ -1392,10 +1517,11 @@ async function renderViewer() {
   function applyCursor() {
     if (!scrollEl) return;
     const t = VIEWER.activeTool;
-    scrollEl.style.cursor = t === 'mark' ? markerCursor()
-      : ((t === 'text' || t === 'edittext') ? 'text'
-        : (t === 'note' ? 'copy'
-          : ((t === 'cover' || t === 'snapshot' || SHAPE_TOOLS.includes(t)) ? 'crosshair' : '')));
+    scrollEl.style.cursor = t === 'hand' ? 'grab'
+      : (t === 'mark' ? markerCursor()
+        : ((t === 'text' || t === 'edittext') ? 'text'
+          : (t === 'note' ? 'copy'
+            : ((t === 'cover' || t === 'snapshot' || SHAPE_TOOLS.includes(t)) ? 'crosshair' : ''))));
   }
   // --- Capa de texto seleccionable (SIEMPRE activa, como en Nitro): el ratón
   //     selecciona el texto real de la página; el cursor se vuelve "I" sobre él.
@@ -1418,6 +1544,7 @@ async function renderViewer() {
   function setTool(name) {
     VIEWER.activeTool = (VIEWER.activeTool === name) ? '' : name;
     const t = VIEWER.activeTool;
+    handBtn.classList.toggle('on', t === 'hand');
     markBtn.classList.toggle('on', t === 'mark');
     textBtn.classList.toggle('on', t === 'text');
     coverBtn.classList.toggle('on', t === 'cover');
@@ -1646,6 +1773,7 @@ async function renderViewer() {
   // ---- Atajos de teclado del visor ----
   VIEWER.viewerKeys = (e) => {
     const mod = e.ctrlKey || e.metaKey;
+    if (e.key === 'Escape' && VIEWER.activeTool) { e.preventDefault(); setTool(VIEWER.activeTool); return; } // salir de la herramienta → modo normal
     if (mod && (e.key === 'f' || e.key === 'F')) { e.preventDefault(); openSearch(); return; }
     if (mod && (e.key === 's' || e.key === 'S')) { e.preventDefault(); saveDoc(e.shiftKey); return; }
     if (mod && (e.key === 'p' || e.key === 'P')) { e.preventDefault(); openPrintPreview({ pdf: doc.pdf, bytes: doc.bytes, numPages: doc.numPages, current: doc.current }); return; }
@@ -1671,8 +1799,9 @@ async function renderViewer() {
       lblBtn(I.print, 'Imprimir', 'Imprimir · Ctrl+P', () => openPrintPreview({ pdf: doc.pdf, bytes: doc.bytes, numPages: doc.numPages, current: doc.current }), 'vb-accent'),
       vbtn(I.search, 'Buscar (Ctrl+F)', () => openSearch()),
     ]),
-    island('Vista', [thumbsBtn, outlineBtn, bookmarkBtn, darkBtn, ocrBtn]),
+    island('Vista', [thumbsBtn, outlineBtn, bookmarkBtn, darkBtn, ocrBtn, sigBtn]),
     island('Navegar', [
+      handBtn, vd(),
       vbtn(I.up, 'Página anterior', () => goTo(doc.current - 1)),
       el('div', { class: 'vb-page' }, [pageInput, el('span', { text: '/ ' + doc.numPages })]),
       vbtn(I.down, 'Página siguiente', () => goTo(doc.current + 1)),
@@ -1939,11 +2068,21 @@ async function renderViewer() {
     });
   }
 
+  // --- Herramienta Mano: arrastrar la hoja para desplazarla (paneo) ---
+  function startPan(e) {
+    const sx = e.clientX, sy = e.clientY, sl = scrollEl.scrollLeft, st = scrollEl.scrollTop;
+    scrollEl.classList.add('grabbing');
+    const move = (ev) => { scrollEl.scrollLeft = sl - (ev.clientX - sx); scrollEl.scrollTop = st - (ev.clientY - sy); };
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); scrollEl.classList.remove('grabbing'); };
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+  }
+
   // --- crear marcas / tapados / texto sobre la página ---
   let drawing = null;
   scrollEl.addEventListener('pointerdown', (e) => {
     const t = VIEWER.activeTool;
     if (!t || e.button !== 0 || e.target.closest('.vmark-del, .vedit, .vform-field')) return;
+    if (t === 'hand') { startPan(e); e.preventDefault(); return; }
     const wrap = e.target.closest('.vpage');
     if (!wrap || !wrap._vp) return;
     // confirmar (cerrar) cualquier cuadro de texto que estuviera editándose
